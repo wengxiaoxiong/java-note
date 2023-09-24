@@ -1,0 +1,11 @@
+{
+  "name": "1",
+  "version": "1.0.0",
+  "description": "",
+  "main": "1",
+  "scripts": {
+    "dev":"ts-node test.ts"
+  },
+  "author": "",
+  "license": "ISC"
+}
