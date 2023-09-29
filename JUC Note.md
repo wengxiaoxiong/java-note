@@ -1,4 +1,4 @@
-# JUC学习笔记
+#  JUC学习笔记
 
 # CH1-CH3 基础
 
@@ -212,7 +212,7 @@ public class Main {
 2. 打断sleep wait join的进程，会抛出IInterruptedException，isInterrupted()函数返回false
 3. yield进入 RUNNABLE状态
 
-### 两阶段终止
+### 面试题：两阶段终止
 
 T1线程如何优雅的结束T2线程？如果直接执行stop方法，就真正意义上结束这个线程了，那么就无法释放资源，会出问题
 
@@ -547,7 +547,13 @@ java中加锁的过程如下：
 
 
 
-### 自旋锁优化
+### 面试题：自旋锁优化
+
+w(){
+
+​	s
+
+}
 
 ```java
 // 自旋锁伪代码：
@@ -688,3 +694,253 @@ public class Cigarette {
 ```
 
 ## 设计模式：保护性暂停
+
+保护性暂停有什么用？线程的Join和Future就是通过这个实现，假如线程1想要获取到线程2的结果，他们就可以共同存储在一个对象之中。直到运行完成后，放入结果再来唤醒另外一个等待的线程
+
+ ![image-20230929001547589](/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230929001547589.png)
+
+```java
+public class GuardSSuspendLearn {
+
+    public static void main(String[] args) {
+        Guard guard = new Guard();
+        new Thread(()->{
+            System.out.println("下载之前");
+            final Integer object = (Integer) guard.getObject();
+            System.out.println("下载得到了结果，值为" + object);
+        }).start();
+
+        new Thread(()->{
+            try {
+                Thread.sleep(10000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            guard.setObject(1);
+
+        }).start();
+    }
+}
+class Guard {
+    private Object object;
+
+    public Object getObject() {
+        synchronized (this){
+            while(object==null){
+                try {
+                    this.wait();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            return object;
+        }
+    }
+
+    public void setObject(Object object) {
+        synchronized (this){
+            this.object = object;
+            this.notifyAll();
+        }
+    }
+} 
+```
+
+我们可以去观看Join()的代码，如果t.join()，会不断调用t.wait(0)方法阻塞主线程，直到等待的线程运行完毕跳出唤醒主线程
+
+```java
+    public final synchronized void join(final long millis)
+    throws InterruptedException {
+        if (millis > 0) {
+            if (isAlive()) {
+                final long startTime = System.nanoTime();
+                long delay = millis;
+                do {
+                    wait(delay);
+                } while (isAlive() && (delay = millis -
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime)) > 0);
+            }
+        } else if (millis == 0) {
+            while (isAlive()) {
+                wait(0);
+            }
+        } else {
+            throw new IllegalArgumentException("timeout value is negative");
+        }
+    }
+```
+
+### 面试题：生产者消费者，消息队列
+
+```java
+import java.util.LinkedList;
+import java.util.Queue;
+
+public class MessageQueue {
+
+    static MQ mq =  new MQ(100);
+
+    public static void main(String[] args) {
+
+        for (int i = 0; i < 100; i++) {
+            new Thread(()->{
+                try {
+                    Integer integer = mq.get();
+                    System.out.println("消费者拿消息"+integer);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            },i+"线程").start();
+        }
+
+        for (int i = 0; i < 100; i++) {
+            new Thread(()->{
+                System.out.println("生产者产生消息");
+                try {
+                    mq.put(1);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            },i+"线程").start();
+        }
+
+
+
+    }
+}
+
+
+class MQ{
+    private LinkedList<Integer> mq = new LinkedList<>();
+
+    private Integer capacity = 0;
+
+    public MQ(Integer capacity){
+        this.capacity = capacity;
+    }
+
+    public Integer get() throws InterruptedException {
+        synchronized (mq){
+            while(mq.isEmpty()){
+                mq.wait();
+            }
+
+            mq.notifyAll();
+            capacity--;
+            return mq.remove();
+
+        }
+    }
+
+    public void put(Integer integer) throws InterruptedException {
+        synchronized (mq){
+            while(mq.size()==capacity){
+                mq.wait();
+            }
+
+            mq.notifyAll();
+            capacity++;
+            mq.push(integer);
+        }
+    }
+
+}
+```
+
+## Park & Unpark使用
+
+```java
+import java.util.concurrent.locks.LockSupport;
+
+public class ParkTest {
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(()->{
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            System.out.println("park");
+            LockSupport.park();
+            System.out.println("resume");
+
+        });
+        t1.start();
+
+        Thread.sleep(4000);
+        System.out.println("unpark");
+        LockSupport.unpark(t1);
+
+
+    }
+}
+```
+
+### 面试题：park&unpark和wait&notify区别
+
+1. park来自juc的LockSupport的API，而wait notify来自Object类
+2. park不需要获取锁才能使用，wait需要获取锁，在同步代码块内才能使用
+3. park可以精确唤醒某一个进程，然而notify是随机唤醒一个进程
+4. unpark可以先唤醒还没park的进程，等他真的park的瞬间unpark
+
+### 原理:
+
+每个线程都有自己的Parker对象，由三部分实现，counter condition mutex
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230929162217632.png" alt="image-20230929162217632" style="zoom:50%;" />
+
+视频中老师举了一个例子：线程是一个旅人，Parker对象是一个线程的背包，condition是一个帐篷，counter是干粮的意思，counter=0表示没干粮了，counter=1表示还有干粮，当调用park的时候，就会去包里看看干粮还有没有，没有的话就进帐篷休息，如果有干粮，就把干粮吃了，继续前行。unpark()这个方法就是给counter+1，让干粮充足。所以说有以下两种情况：
+
+1. counter=0的时候调用了park()，没干粮了，线程只好停止运行，直到有人unpark()加了干粮，线程才会继续运行
+2. counter=0的时候某个线程先unpark()给他加了干粮，线程在运行的期间park()了，发现还有干粮，于是继续运行。
+
+这就是为什么线程可以提前调用unpark()
+
+### 状态切换问题
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230929164240689.png" alt="image-20230929164240689" style="zoom:67%;" />
+
+### 多把锁
+
+一个房间，可以做两件事，睡觉和读书，这两件事情不相关，不需要锁住整个房间，不然这样颗粒度太大了，可以尝试降低颗粒度，比如拆成读书锁和睡觉锁。
+
+坏处：多锁问题可能会产生死锁
+
+## 锁的活跃性
+
+死锁、活锁、饥饿
+
+### 死锁
+
+#### 面试题：死锁的条件
+
+请求与保持等待
+
+循环依赖
+
+不剥夺条件
+
+互斥
+
+#### 定位死锁
+
+使用jconsole，定位进程id，再用jstack定位死锁，然后可以发现java-level DeadLock
+
+### 活锁
+
+两个线程互相改变对方的结束条件，导致无法结束，比如游泳池一边放水一边灌水问题。
+
+A线程的任务是把水放光才能下班
+
+B线程的任务是把水放满才能下班
+
+结果两人都无法下班，这就是一个活锁问题。
+
+### 饥饿
+
+1. 优先级分配问题，导致优先级低的线程一直无法被获取CPU
+
+2. 锁排序问题，一直抢不到锁，导致饥饿，比如哲学家就餐问题，总会一位一直吃不到饭
+
+# ReentrantLock(可重入锁)
