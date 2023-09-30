@@ -944,3 +944,514 @@ B线程的任务是把水放满才能下班
 2. 锁排序问题，一直抢不到锁，导致饥饿，比如哲学家就餐问题，总会一位一直吃不到饭
 
 # ReentrantLock(可重入锁)
+
+```java
+import java.util.concurrent.locks.ReentrantLock;
+
+public class LockTest {
+    public static ReentrantLock reentrantLock = new ReentrantLock();
+
+    public static void main(String[] args) {
+        reentrantLock.lock();
+        try {
+            System.out.println("main1");
+            main2();
+        }finally {
+            reentrantLock.unlock();
+        }
+    }
+
+    public static void main2() {
+        reentrantLock.lock();
+        try {
+            System.out.println("main2");
+        }finally {
+            reentrantLock.unlock();
+        }
+    }
+}
+```
+
+## Feature
+
+### 可打断
+
+获取不到锁的时候可以选择不继续排队，如果是syn必须排队
+
+```java
+import java.util.concurrent.locks.ReentrantLock;
+
+import static java.lang.Thread.sleep;
+
+public class LockTest {
+    public static ReentrantLock reentrantLock = new ReentrantLock();
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(()->{
+            try {
+                System.out.println("尝试获取锁");
+                reentrantLock.lockInterruptibly();
+            } catch (InterruptedException e) {
+                System.out.println("排队的过程被打断了");
+                throw new RuntimeException(e);
+            }
+            try {
+                System.out.println("main1");
+                main2();
+            }finally {
+                reentrantLock.unlock();
+            }
+        },"t1");
+
+        reentrantLock.lock();
+        t1.start();
+        sleep(1000);
+        t1.interrupt();
+    }
+
+    public static void main2() {
+        reentrantLock.lock();
+        try {
+            System.out.println("main2");
+        }finally {
+            reentrantLock.unlock();
+        }
+    }
+}
+
+```
+
+### 可设置为公平锁
+
+默认都是不公平锁，阻塞队列的线程会一拥而上抢锁。一般不会开启，会降低并发度
+
+### 可以设置超时时间
+
+```java
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class TryLockDemo {
+    public static ReentrantLock lock = new ReentrantLock();
+
+    public static void main(String[] args) {
+        Thread t1 = new Thread(()->{
+            try {
+                if(lock.tryLock(1, TimeUnit.SECONDS)){
+                    try{
+                        System.out.println(Thread.currentThread().getName()+"获取锁了hh");
+                    }finally {
+                        System.out.println(Thread.currentThread().getName()+"释放锁");
+                        lock.unlock();
+                    }
+                }else{
+                    System.out.println(Thread.currentThread().getName()+"白等了一秒");
+                    return;
+                }
+            } catch (InterruptedException e) {
+                System.out.println(Thread.currentThread().getName()+"等待的时候被打断了");
+                throw new RuntimeException(e);
+            }
+        },"t1");
+        lock.lock();
+        System.out.println("主线程先把锁抢了");
+        t1.start();
+    }
+}
+
+```
+
+### 支持多个条件变量
+
+在synchronized中，每个重量级锁的对象都有waitSet休息室，这个waitSet就是条件变量。但是休息室里的人wait的东西都不一样，有的人等烟，有的人等饭，ReentrantLock支持支持多了个条件变量，这样就可以唤醒制定的waitSet。用小南抽烟、小女吃饭举例子，FoodPanda松烟，UberEat送饭
+
+```java
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+import static java.lang.Thread.sleep;
+
+public class ConditionTest {
+    static ReentrantLock lock = new ReentrantLock();
+    static Condition cigarette = lock.newCondition();
+    static Condition dinner = lock.newCondition();
+
+    static Boolean hasCigarette = false;
+
+    static Boolean hasDinner = false;
+
+    public static void main(String[] args) {
+        Thread xiaoNan = new Thread(()->{
+
+            lock.lock();
+            try{
+                while(!hasCigarette) {
+                    System.out.println("烟呢，草");
+                    cigarette.await();
+                }
+                System.out.println("抽烟真爽啊");
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                lock.unlock();
+            }
+
+        },"小南");
+
+        Thread xiaoNv = new Thread(()->{
+            lock.lock();
+            try{
+                while(!hasDinner) {
+                    System.out.println("饭呢，草");
+                    dinner.await();
+                }
+                System.out.println("吃饭真爽啊");
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                lock.unlock();
+            }
+        },"小女");
+
+        Thread foodPanda = new Thread(()->{
+            lock.lock();
+            try{
+                try {
+                    sleep(3000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                System.out.println("烟来了");
+                hasCigarette = true;
+                cigarette.signalAll();
+            }finally {
+                lock.unlock();
+            }
+        },"送烟");
+
+        Thread uberEats = new Thread(()->{
+            lock.lock();
+            try{
+                try {
+                    sleep(3000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                System.out.println("饭来了");
+                hasDinner = true;
+                dinner.signalAll();
+            }finally {
+                lock.unlock();
+            }
+        },"送饭");
+
+        xiaoNan.start();
+        xiaoNv.start();
+        foodPanda.start();
+        uberEats.start();
+
+    }
+}
+
+```
+
+这里我踩了一个坑，两个外卖员我没有上锁，就开始唤醒线程了，这是一个错误的使用，不然会报错
+
+```
+烟呢，草
+饭呢，草
+烟来了
+饭来了
+Exception in thread "送烟" java.lang.IllegalMonitorStateException
+	at java.base/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.signalAll(AbstractQueuedSynchronizer.java:1488)
+	at ConditionTest.lambda$main$2(ConditionTest.java:59)
+	at java.base/java.lang.Thread.run(Thread.java:833)
+Exception in thread "送饭" java.lang.IllegalMonitorStateException
+	at java.base/java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.signalAll(AbstractQueuedSynchronizer.java:1488)
+	at ConditionTest.lambda$main$3(ConditionTest.java:75)
+	at java.base/java.lang.Thread.run(Thread.java:833)
+```
+
+## 面试题：同步模式顺序控制
+
+控制线程的运行次序，轮流打印2和1
+
+解法1：锁类
+
+```
+    public static void main(String[] args) {
+        new Thread(()->{
+            while(true){
+                synchronized (Test25.class){
+                    System.out.println("2");
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+        }).start();
+        new Thread(()->{
+            while(true){
+                synchronized (Test25.class){
+                    System.out.println("1");
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+        }).start();
+```
+
+解法2：wait notify
+
+```
+public class Test25 {
+
+    public static Object lock = new Object();
+
+    public static Boolean t2done = true;
+    public static Boolean t1done = false;
+
+    public static void main(String[] args)  {
+        new Thread(()->{
+            while(true){
+                synchronized (lock){
+                    while(!t2done){
+                        try {
+                            lock.wait();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                    System.out.println("1");
+                    t1done =true;
+                    lock.notifyAll();
+                    try {
+                        lock.wait();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+        }).start();
+
+        new Thread(()->{
+
+            while(true){
+                synchronized (lock){
+                    while(!t1done){
+                        try {
+                            lock.wait();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                    System.out.println("2");
+                    t2done =true;
+                    lock.notifyAll();
+                    try {
+                        lock.wait();
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+
+        }).start();
+    }
+}
+
+```
+
+解法3 LockCondition 解法4Park 略
+
+## 面试题：轮流输出ABC
+
+### WaitNotify方法
+
+```
+public class Test26 {
+    public static void main(String[] args) {
+        WaitNotify wn = new WaitNotify(0,100);
+        new Thread(()->{
+            try {
+                wn.print(0,"a");
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }).start();
+        new Thread(()->{
+            try {
+                wn.print(1,"b");
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }).start();
+        new Thread(()->{
+            try {
+                wn.print(2,"c");
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }).start();
+
+    }
+
+
+}
+
+class WaitNotify {
+    private int flag;
+    private int loopNumber;
+
+    private int curNum = 0;
+
+    public synchronized void print(int flag,String cur) throws InterruptedException {
+        while(curNum<loopNumber){
+            if(this.flag!=flag){
+                wait();
+            }
+            System.out.println(cur);
+            curNum++;
+            this.flag = curNum % 3;
+            notifyAll();
+        }
+    }
+
+    WaitNotify(int flag, int loopNumber) {
+        this.flag = flag;
+        this.loopNumber = loopNumber;
+    }
+}
+```
+
+### Park&Unpark方法
+
+```
+import java.util.concurrent.locks.LockSupport;
+
+public class ParkUnparkTest {
+    static Thread t1;
+    static Thread t2;
+    static Thread t3;
+    public static void main(String[] args) {
+        ParkUnpark unpark = new ParkUnpark(100);
+         t1 = new Thread(()->{
+            unpark.print("A",t1,t2);
+        });
+        t2 = new Thread(()->{
+            unpark.print("B",t2,t3);
+        });
+        t3 = new Thread(()->{
+            unpark.print("C",t3,t1);
+        });
+        t1.start();
+        t2.start();
+        t3.start();
+
+        LockSupport.unpark(t1);
+    }
+}
+
+class ParkUnpark{
+
+    public ParkUnpark(int loopNumber) {
+        this.loopNumber = loopNumber;
+    }
+
+    private int loopNumber;
+
+    private int flag = 0;
+
+    public void print(String cur,Thread park,Thread unpark){
+        while(flag<loopNumber){
+            LockSupport.park(park);
+            System.out.println(cur);
+            LockSupport.unpark(unpark);
+            flag++;
+        }
+
+    }
+}
+
+```
+
+### ReentrantLock Condition方法
+
+```
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class ReentrantLockTest {
+    public static void main(String[] args) {
+        AwaitSignalAll as = new AwaitSignalAll(100);
+
+        Condition a = as.newCondition();
+        Condition b = as.newCondition();
+        Condition c = as.newCondition();
+
+        new Thread(()->{
+            try {
+                as.print("A",a,b);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }).start();
+
+        new Thread(()->{
+            try {
+                as.print("B",b,c);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }).start();
+
+        new Thread(()->{
+            try {
+                as.print("C",c,a);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }).start();
+
+        as.lock();
+        try{
+            a.signalAll();
+        }finally {
+            as.unlock();
+        }
+
+    }
+}
+
+class AwaitSignalAll extends ReentrantLock {
+    private int loopNumber;
+
+    private int flag=0;
+
+    public void print(String str,Condition cur,Condition next) throws InterruptedException {
+        while(flag<loopNumber){
+            lock();
+            try{
+                cur.await();
+                System.out.println(str);
+                next.signalAll();
+                flag++;
+            }finally {
+                unlock();
+            }
+        }
+    }
+
+    public AwaitSignalAll(int loopNumber) {
+        this.loopNumber = loopNumber;
+    }
+}
+```
+
