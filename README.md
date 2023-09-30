@@ -5,8 +5,9 @@
 
 | 课程  | 进度 | 地址                                                         | 计划开始 | 计划结束 | 实际结束 |
 | ----- | ---- | ------------------------------------------------------------ | -------- | -------- | -------- |
-| JUC   | 45%  | [黑马程序员JUC](https://www.bilibili.com/video/BV16J411h7Rd/?p=51) | 09/22    | 10/02    |          |
+| JUC   | 48%  | [黑马程序员JUC](https://www.bilibili.com/video/BV16J411h7Rd/?p=51) | 09/22    | 10/02    |          |
 | REDIS | 31%  | [黑马程序员Redis](https://www.bilibili.com/video/BV1cr4y1671t/?p=62&vd_source=4ecbd74492b814a1f67b90284f57a068) | 08/23    | 10/07    |          |
+| 算法  | 0%   | [代码随想录](https://www.bilibili.com/video/BV1fA4y1o715/)   | 10/01    | 11/01    |          |
 
 ### 课程队列
 

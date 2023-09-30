@@ -1179,7 +1179,7 @@ Exception in thread "送饭" java.lang.IllegalMonitorStateException
 
 解法1：锁类
 
-```
+```java
     public static void main(String[] args) {
         new Thread(()->{
             while(true){
@@ -1209,7 +1209,7 @@ Exception in thread "送饭" java.lang.IllegalMonitorStateException
 
 解法2：wait notify
 
-```
+```java
 public class Test25 {
 
     public static Object lock = new Object();
@@ -1274,7 +1274,7 @@ public class Test25 {
 
 ### WaitNotify方法
 
-```
+```java
 public class Test26 {
     public static void main(String[] args) {
         WaitNotify wn = new WaitNotify(0,100);
@@ -1332,7 +1332,7 @@ class WaitNotify {
 
 ### Park&Unpark方法
 
-```
+```java
 import java.util.concurrent.locks.LockSupport;
 
 public class ParkUnparkTest {
@@ -1383,7 +1383,7 @@ class ParkUnpark{
 
 ### ReentrantLock Condition方法
 
-```
+```java
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
@@ -1454,4 +1454,184 @@ class AwaitSignalAll extends ReentrantLock {
     }
 }
 ```
+
+# CH5 JAVA内存模型
+
+关注多个线程并发的时候的原子性，可见性，有序性
+
+原子性：保证指令不会受到线程上下切换的影响
+
+> synchronized、ReentrantLock来保证代码块内的操作是原子的
+
+可见性：保证指令不会受CPU缓存指令的影响
+
+> volatile来保证变量的可见性，但是不不保证原子性。可以使用synchronized来保证原子性和可见性，但是这个过于重量级。
+
+有序性：保证指令不会受CPU并行优化影响
+
+> 
+
+## JMM
+
+### INTRO
+
+开头作者用一个代码举例子，看看这个线程会不会运行结束？
+
+```java
+public class VolatileTest {
+    static boolean run = true;
+
+    public static void main(String[] args) throws InterruptedException {
+        new Thread(()->{
+            while(run){
+
+            }
+        }).start();
+
+        Thread.sleep(1000);
+        System.out.println("设置为false");
+        run = false;
+    }
+}
+
+```
+
+不会结束，因为为了提高运行效率，**Java 内存模型（JMM）** 抽象了线程和主内存之间的关系，就比如说线程之间的共享变量必须存储在主内存中。
+
+如何破解？
+
+解法一、加一个`volatile adj易变的;易挥发的`关键字可以保证可见性，线程每次访问这个变量的时候都会去主内存拉去
+
+```java
+public class VolatileTest {
+    static volatile boolean run = true;
+
+    public static void main(String[] args) throws InterruptedException {
+        new Thread(()->{
+            while(run){
+
+            }
+        }).start();
+
+        Thread.sleep(1000);
+        System.out.println("设置为false");
+        run = false;
+    }
+}
+
+```
+
+解法二、用synchronized把他们包围，当一个线程进入 `synchronized` 代码块并获取锁后，它会清空本地线程栈中对共享变量的缓存，强制从主内存中重新读取共享变量的值。当线程释放锁时，它会将对共享变量的修改刷新到主内存，这样其他线程在获取锁并访问共享变量时就能看到最新的值，从而解决了变量可见性问题。
+
+```java
+public class VolatileTest {
+    static volatile boolean run = true;
+  
+  	static Object lock = new Object();
+
+    public static void main(String[] args) throws InterruptedException {
+        new Thread(()->{
+          	while(true){
+              	synchronized(lock){
+                  if(!run){
+                    break;
+                  }
+								}
+            }
+        }).start();
+
+        Thread.sleep(1000);
+        System.out.println("设置为false");
+     
+        synchronized(lock){
+   					run = false;
+        }
+      
+    }
+}
+
+```
+
+### 内存模型
+
+在 JDK1.2 之前，Java 的内存模型实现总是从 **主存** （即共享内存）读取变量，是不需要进行特别的注意的。而在当前的 Java 内存模型下，线程可以把变量保存 **本地内存** （比如机器的寄存器）中，而不是直接在主存中进行读写。这就可能造成一个线程在主存中修改了一个变量的值，而另外一个线程还继续使用它在寄存器中的变量值的拷贝，造成数据的不一致。
+
+这和我们上面讲到的 CPU 缓存模型非常相似。
+
+**什么是主内存？什么是本地内存？**
+
+- **主内存**：所有线程创建的实例对象都存放在主内存中，不管该实例对象是成员变量还是方法中的本地变量(也称局部变量)
+- **本地内存**：每个线程都有一个私有的本地内存来存储共享变量的副本，并且，每个线程只能访问自己的本地内存，无法访问其他线程的本地内存。本地内存是 JMM 抽象出来的一个概念，存储了主内存中的共享变量副本。
+
+有点像是CPU的高速缓存
+
+<img src="https://oss.javaguide.cn/github/javaguide/java/concurrent/cpu-cache.png" alt="CPU 缓存模型示意图" style="zoom: 50%;" /><img src="https://oss.javaguide.cn/github/javaguide/java/concurrent/jmm.png" alt="JMM(Java 内存模型)" style="zoom:50%;" />
+
+## 两阶段终止更新
+
+这一次可以使用volatile的方式来获取run最近的状态。
+
+```java
+public class VolatileTest2 {
+    static volatile boolean run = true;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(()->{
+            while(true){
+                if(!run){
+                    System.out.println("停止监控，释放锁");
+                    break;
+                }
+                System.out.println("执行监控任务");
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                }
+            }
+        });
+        t1.start();
+
+        Thread.sleep(1000);
+        stop(t1);
+    }
+
+    public static void stop(Thread t1) {
+        System.out.println("收到停止监控的通知");
+        VolatileTest2.run = false;
+        t1.interrupt();
+    }
+}
+```
+
+## 指令重排序
+
+作者用了一个有趣的例子带大家了解了鱼罐头制作过程，我们可以并行做多件事情，CPU也可以并行执行几件事情，所以指令重排序可以提高cpu指令的吞吐量。JAVA同理，在不改变执行结果的情况下，JVM会对指令进行重新排序
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230930163035305.png" alt="image-20230930163035305" style="zoom:50%;" />
+
+比如说：
+
+```java
+int a = 1;
+int b = 2;
+System.out.println(a+b);
+
+// 重排序后
+
+int b = 2;
+int a = 1;
+System.out.println(a+b);
+```
+
+### 这会引发什么问题？
+
+对于单线程而言，这并不会影响最终的执行结果。但是多线程可能就会出问题了
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230930163453363.png" alt="image-20230930163453363" style="zoom:50%;" /> 可能出现的结果：1、4、0
+
+虽然发生的几率低，但是高并发的情况下一定会有可能的。解决办法，在ready 前面加上volatile，原理后面解释
+
+## Volatile原理
+
+todo
 
