@@ -40,4 +40,5 @@ const calculate_from_to = (from: number, to: number) => {
 // calculate(5);
 
 // console.log("周六 0923");
-calculate_from_to(1, 145);
+calculate_from_to(1, 173);
+calculate_from_to(173, 302);

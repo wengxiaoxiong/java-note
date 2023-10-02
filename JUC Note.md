@@ -9,12 +9,14 @@
 ```java
     public static void main(String[] args) {
         Thread t = new Thread(){
+          	@override
             public void run(){
                 System.out.println("Test");
             }
         };
-
+      
         t.start();
+   
     }
 ```
 
@@ -75,7 +77,8 @@ public class Thread{
 }
 ```
 
-
+- 解耦，继承Thread把线程和任务绑定在一起了，实现Runnable接口把线程和任务分开了
+- 用runnable更容易与线程池的API相配合
 
 ### FutureTask
 
@@ -331,7 +334,7 @@ public class DaemonTest {
 
 <img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230923074538501.png" alt="image-20230923074538501" style="zoom:50%;" />
 
-# CH4 共享模型之管程
+# CH4 管程并发-悲观锁（阻塞）
 
 ## 线程不安全的例子
 
@@ -1631,7 +1634,138 @@ System.out.println(a+b);
 
 虽然发生的几率低，但是高并发的情况下一定会有可能的。解决办法，在ready 前面加上volatile，原理后面解释
 
-## Volatile原理
+## Volatile原理如何保证可见性和有序性？
 
-todo
+底层是用内存屏障技术（Memory Barrier）实现
 
+- 对volatile变量的写指令写之后加入写屏障
+- 对volatile变量的读指令读之前加入读屏障
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20230930195014186.png" alt="image-20230930195014186" style="zoom:50%;" />
+
+写屏障之前的所有改动都会同步到主存，屏障之前的指令且不会指令重拍
+
+读屏障之后的所有读取都会从主存中同步，屏障之后的指令且不会指令重拍
+
+### Double Check Locking问题
+
+> 单例很多实现，至少五种每个都要学会，就先不列了，自己看看设计模式
+
+懒汉式单例，如何做到绝对的线程安全，解释有点复杂，自己看视频吧，多看几次，没法理解就强行背下吧。
+
+```java
+ public class Singleton implements Serializable{
+    public volatile static final  Singleton INSTANCE;
+
+    private Singleton() {
+        
+    }
+   
+    public Singleton getINSTANCE(){
+        if(INSTANCE==null){
+            synchronized (Singleton.class){ //创建对象的时候最多只能一个线程进去创建
+                if(INSTANCE==null){
+                    INSTANCE = new Singleton(); //这里可能指令重排，所以需要将INSTANCE设置为volatile防止指令重排
+                }
+            }
+        } 
+        return INSTANCE;
+    }
+   
+   // 防止反序列破坏单例
+   public Object readResovle(){
+     	return INSTANCE;
+   }
+}
+```
+
+# CH6  无锁并发-乐观锁（非阻塞）
+
+>  基于CAS和volatile实现无锁并发
+
+## 本章内容
+
+原子整数
+
+原子引用
+
+原子累加器
+
+Unsafe
+
+## Intro
+
+在前面的学习，我们使用了悲观锁的方法，如synchronized和ReentrantLock来实现线程安全，从而达到多线程数据一致。但是使用锁对性能的开销比较大，会阻塞线程，然后上下文切换，这个代价太大了，所以我们使用乐观锁的方式来解决，主要的思想就是CAS，`AtomicInteegr`，`AtomicReference`，	`AtomicStampReference`、	`AtomicMakrableReference`都是用这个原理。
+
+## AtomicInteger  银行账户案例
+
+其他API也是大同小异，不写了
+
+```java
+import java.net.Inet4Address;
+import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class AtomicTest {
+    public static void main(String[] args) throws InterruptedException {
+        Account account = new Account(10000);
+        System.out.println("提款之前"+account.getBalance());
+
+        ArrayList<Thread> threads = new ArrayList<>();
+        for(int i=0;i<10000;i++){
+            threads.add(new Thread(()->{
+                account.withdrawAPI(1);
+            }));
+        }
+
+        threads.forEach(t->t.start());
+
+        threads.forEach(t-> {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        System.out.println("提款之后"+account.getBalance());
+    }
+}
+
+class Account{
+    AtomicInteger balance;
+
+    public Account(int balance) {
+        this.balance = new AtomicInteger(balance);
+    }
+
+    public AtomicInteger getBalance() {
+        return balance;
+    }
+
+    public void withdraw(int delta){
+        while(true){
+            final int prev = balance.get();
+            final int next = prev-delta;
+            if(next<0){
+                return;
+            }
+            if(balance.compareAndSet(prev,next)){
+                return;
+            }
+        }
+
+    }
+
+    public void withdrawAPI(int delta){
+        balance.getAndUpdate(x->x-delta);
+    }
+
+}
+
+
+```
+
+## AtomicReference
+
+除了可以基本类型，也可以使用引用类型，比较的是地址。还有支持版本，支持标记的，分别是AtomicStampReference和
