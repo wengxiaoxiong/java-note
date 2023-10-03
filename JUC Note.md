@@ -1766,6 +1766,202 @@ class Account{
 
 ```
 
-## AtomicReference
+## 其他原子类
 
-除了可以基本类型，也可以使用引用类型，比较的是地址。还有支持版本，支持标记的，分别是AtomicStampReference和
+除了可以基本类型，也可以使用引用类型，比较的是地址。还有支持版本，支持标记的，分别是AtomicStampReference和AtomicMarkableReference，这样就可以防止ABA问题，修改之前会去比对一下标记或是版本能不能对上，不能对上则修改失败。
+
+## LongAdder
+
+基于CPU的原理并发走累加，真他妈快
+
+```java
+import java.util.ArrayList;
+import java.util.concurrent.atomic.LongAdder;
+
+public class LongAddertest {
+
+    static ArrayList<Thread> list = new ArrayList<>();
+
+    public static void main(String[] args){
+        LongAdder longAdder = new LongAdder();
+
+        Long s = System.currentTimeMillis();
+
+
+        for(int i = 0; i < 100 ; i++) {
+            list.add(new Thread(()->{
+                for(int j = 0; j < 100,000; j++) {
+                    longAdder.increment();
+                }
+            }));
+        }
+
+        list.forEach(t->t.start());
+        list.forEach(t-> {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        Long e = System.currentTimeMillis();
+
+
+        System.out.println(e-s); // 58
+        System.out.println(longAdder.sum()); //1,000,000
+    }
+
+}
+
+```
+
+为什么呢，因为它使用了分段锁的设计思想，分而治之这个累加任务
+
+![截屏2023-10-03 下午5.17.50](/Users/wengxiaoxiong/Documents/tech stack/projects/java-note/JUC图片/截屏2023-10-03 下午5.17.50.png)
+
+## 源码分析
+
+LongAdder的父亲Striped64有这些属性
+
+```java
+/**
+  * Table of cells. When non-null, size is a power of 2.
+*/
+transient volatile Cell[] cells;
+
+/**
+ * Base value, used mainly when there is no contention, but also as
+ * a fallback during table initialization races. Updated via CAS.
+ */
+transient volatile long base;
+
+/**
+ * Spinlock (locked via CAS) used when resizing and/or creating Cells.
+ */
+transient volatile int cellsBusy;
+```
+
+其中Cell是累加单元
+
+```java
+//这个@Contended注解用来防止缓存行伪共享
+@jdk.internal.vm.annotation.Contended static final class Cell {
+      volatile long value;
+      Cell(long x) { value = x; }
+    
+    //使用cas的方法进行累加
+      final boolean cas(long cmp, long val) {
+          return VALUE.weakCompareAndSetRelease(this, cmp, val);
+      }
+    //省略别的代码
+}
+```
+
+接下来我们来看看LongAdder中的add的实现，有点抽象，但是看懂会变得很牛批
+
+> 忘记 || 和 & 的使用可以去复习一下
+
+```java
+  /**
+   * Adds the given value.
+   *
+   * @param x the value to add
+   */
+  public void add(long x) {
+      Cell[] cs; long b, v; int m; Cell c;
+      if (
+        (cs = cells) != null //cells有没有被创建，被创建表示有多个线程竞争
+        || !casBase(b = base, b + x) //只有cells没创建，才会尝试cas，如果cas成功，直接返回，不成功就进入if
+     		) {
+        
+          int index = getProbe();  // 获取当前线程的探测值，用来选择不同的计数桶（striped bucket）。
+        													 // 这有助于减小并发操作的竞争，提高性能
+        
+          boolean uncontended = true;  //用来表示是否存在争用情况
+        
+          if (cs == null || (m = cs.length - 1) < 0 ||  // 判断cs是不是为空? 再次判断cs是不是为空? 获取cs[]长度 
+              
+              (c = cs[index & m]) == null ||   	// 判断当前线程有没有创建cell
+              
+              !(uncontended = c.cas(v = c.value, v + x)) // 用当前线程的累加单元尝试cas累加
+              																				  // cas操作成功就结束这一切，失败就longAccumulate
+              
+             )   
+              longAccumulate(x, null, uncontended, index); //创建cell  
+      }
+  }
+```
+
+ longAccumulate进去看看，真他妈复杂，总结成为三种情况
+
+1. cells未分配，cell未创建
+2. cells分配了，cell未创建
+3. cells分配了，cell创建了
+
+sum函数巨简单
+
+```java
+  public long sum() {
+      Cell[] cs = cells;
+      long sum = base;
+      if (cs != null) {
+          for (Cell c : cs)
+              if (c != null)
+                  sum += c.value;
+      }
+      return sum;
+  }
+
+```
+
+ 
+
+## Unsafe类
+
+unsafe类的unsafe不是指线程不安全，而是指他会操作内存底层，如果操作失误，可能会翻车。所以只能通过反射获取。unsafe中的CAS方法，调用的是由C++底层实现的。 
+
+API说明
+
+```
+UNSAFE.compareAndSwapInt(Object o, long offset, int prev, int next);
+```
+
+案例：
+
+```java
+class AtomicData {
+	private volatile int data;
+	static final Unsafe unsafe;
+	static final long DATA_OFFSET;
+	static {
+		unsafe = UnsafeAccessor.getUnsafe();
+		try {
+			// data 属性在 DataContainer 对象中的偏移量，用于 Unsafe 直接访问该属性
+			DATA_OFFSET = unsafe.objectFieldOffset(AtomicData.class.getDeclaredField("data"));
+		} catch (NoSuchFieldException e) {
+			throw new Error(e);
+		}
+	}
+	public AtomicData(int data) {
+		this.data = data;
+	}
+	public void decrease(int amount) {
+		int oldValue;
+		while(true) {
+			// 获取共享变量旧值，可以在这一行加入断点，修改 data 调试来加深理解
+			oldValue = data;
+			// cas 尝试修改 data 为 旧值 + amount，如果期间旧值被别的线程改了，返回 false
+			if (unsafe.compareAndSwapInt(this, DATA_OFFSET, oldValue, oldValue - amount)) {
+				return;
+			}
+		}
+	}
+	public int getData() {
+		return data;
+	}
+}
+```
+
+# CH7 不可变对象
+
