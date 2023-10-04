@@ -1971,6 +1971,323 @@ class AtomicData {
 
 #  CH8  并发工具的使用
 
-> 这一章是面试重点，学不下来真他妈完蛋了
->
-> 
+> 这一章是面试重点，学不下来真他妈完蛋
+
+1. 线程池：
+
+   1. ThreadPoolExecutor
+   
+   
+      2. Fork/Join
+   
+
+
+2. JUC：
+
+   1. Lock
+   2. Semaphore
+   3. CountdownLatch
+   4. CyclicBarrier
+   5. CoucurrentHashMap
+   6. CoucurrentLinkedQueue
+   7. BlockingQueue
+   8. CopyOnWriteArrayList
+
+3. disruptor
+
+4. guava
+
+   1. TateLimiter
+
+
+## 线程池
+
+### 【面试题】为什么要线程池
+
+1. 线程是一种系统资源，每次启动一个线程都要占用内存，分配一个Stack。高并发的情况下，如果每一个请求都分配一个线程，可能OOM
+2. 假设每一个任务都一个线程，但是CPU就那点儿，这样做可能会频繁的切换上下文，对性能开销过大
+3. 创建新的线程的开销大，涉及到分配内存、初始化线程数据结构等操作，消耗CPU资源。
+
+> 是一种享元设计模式 的思想
+
+### 自定义线程池
+
+分成几个组件：ThreadPool、BlockingQueue(平衡生产者消费者速度的组件)
+
+### 手写组件
+
+和老师写一遍，基本上就悟了
+
+```java
+import java.security.PrivilegedAction;
+import java.sql.Time;
+import java.util.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class MyBlockingQueue<T> {
+
+    public static void main(String[] args) throws InterruptedException {
+
+
+        MyThreadPool myThreadPool = new MyThreadPool(2,1,TimeUnit.SECONDS,10,(queue,task)->{
+            queue.put(task,1,TimeUnit.MILLISECONDS);
+        });
+        for(int i = 0; i < 500; i++) {
+            int j = i+1;
+            myThreadPool.execute(()->{
+                try {
+                    Thread.sleep(1000);
+                    System.out.println("处理了一个任务，咔咔咔");
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            },j);
+        }
+    }
+
+    // 任务队列
+    private Deque<T> queue = new ArrayDeque<>();
+
+    public MyBlockingQueue(int capacity) {
+        this.capacity = capacity;
+    }
+
+    // 锁 防止被重复消费
+    private ReentrantLock lock = new ReentrantLock();
+
+    // 条件变量 防止生产者无限加任务
+    private Condition fullWaitSet = lock.newCondition();
+
+    // 条件变量 有任务了唤醒消费者
+    private Condition emptyWaitSet = lock.newCondition();
+
+    // 容量
+    private int capacity;
+
+    public int getCapacity() {
+        return capacity;
+    }
+
+    // 带有超时阻塞获取
+    public T take(long time, TimeUnit timeUnit){
+
+
+        lock.lock();
+        try{
+            long nanos = timeUnit.toNanos(time);
+            while(queue.isEmpty()){
+                if(nanos<=0){
+                    return null;
+                }
+                // 超时候会唤醒，进入下一个循环
+                nanos = emptyWaitSet.awaitNanos(nanos);
+            }
+            System.out.println("领取了一个任务：还有"+queue.size());
+            return queue.removeFirst();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally{
+            fullWaitSet.signalAll();
+            lock.unlock();
+        }
+    }
+
+    // 阻塞获取任务
+    public T take(){
+        lock.lock();
+        try{
+            while(queue.isEmpty()){
+                emptyWaitSet.await();
+            }
+
+            return queue.removeFirst();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally{
+            lock.unlock();
+            fullWaitSet.signal();
+        }
+    }
+
+    // 阻塞放入任务
+    public void put(T task){
+        lock.lock();
+        try{
+            while(queue.size()==capacity){
+                System.out.println("要阻塞"+queue.size());
+                fullWaitSet.await();
+                System.out.println("被唤醒"+queue.size());
+            }
+            queue.addLast(task);
+            emptyWaitSet.signalAll();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally{
+            lock.unlock();
+        }
+    };
+    public void put(T task,long time,TimeUnit timeUnit){
+        lock.lock();
+        try{
+            long nanos = timeUnit.toNanos(time);
+            while(queue.size()==capacity){
+                if(nanos<=0){
+                    System.err.println("超时了");
+                    return;
+                }
+                nanos = fullWaitSet.awaitNanos(nanos);
+            }
+            queue.addLast(task);
+            emptyWaitSet.signalAll();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally{
+            lock.unlock();
+        }
+    };
+
+    public void tryPut(RejectPolicy rejectPolicy,T task){
+        lock.lock();
+        try{
+            if(queue.size()==capacity){
+//               根据拒绝策略来稿
+                rejectPolicy.reject(this,task);
+            }else{
+                queue.addLast(task);
+                emptyWaitSet.signalAll();
+            }
+
+        } finally{
+            lock.unlock();
+        }
+    };
+
+    public int size(){
+        lock.lock();
+        try{
+            return queue.size();
+        }finally{
+            lock.unlock();
+        }
+    }
+}
+
+// 拒绝策略
+@FunctionalInterface
+interface RejectPolicy<T>{
+    void reject(MyBlockingQueue<T> queue, T task);
+}
+
+class MyThreadPool{
+
+    // 阻塞队列
+    private MyBlockingQueue<Runnable> taskQueue;
+
+    // 容纳线程的HashSet
+    private HashSet<Worker> workers = new HashSet();
+
+    // 核心线程数
+    private int coreSize;
+
+    // 超时时间，如果任务跑完了，一段时间没有任务进来就关了线程
+    private long timeout;
+
+    private TimeUnit timeUnit;
+
+    private RejectPolicy rejectPolicy;
+
+    public MyThreadPool(int coreSize, long timeout, TimeUnit timeUnit, int queueCapacity,RejectPolicy rejectPolicy) {
+        this.coreSize = coreSize;
+        this.timeout = timeout;
+        this.timeUnit = timeUnit;
+        this.taskQueue = new MyBlockingQueue(queueCapacity);
+        this.workers = new HashSet<>();
+        this.rejectPolicy = rejectPolicy;
+    }
+
+
+    public void execute(Runnable runnable,int j) throws InterruptedException {
+        // 当任务数没有超过coreSize 直接给work执行
+        // 如果>coreSize 直接加入到队列
+        synchronized (workers){
+            if(workers.size()<coreSize){
+
+                Worker worker = new Worker(runnable);
+                System.out.println("新增了Worker:"+worker);
+                worker.start();
+
+                //把这个worker丢到hashset
+                workers.add(worker);
+            }else{
+//                taskQueue.put(runnable);
+                // 拒绝策略
+                taskQueue.tryPut(rejectPolicy,runnable);
+                System.out.println("加入到了任务队列:"+j);
+
+            }
+        }
+    }
+
+
+    class Worker extends Thread {
+
+        Runnable task;
+
+        public Worker(Runnable task) {
+            this.task = task;
+        }
+
+        @Override
+        public void run() {
+            // 执行任务
+            // 1. 当task不为空，执行任务，如果没有任务就去拿任务
+            while(task != null || (task = taskQueue.take(timeout,timeUnit)) != null){
+                try{
+                    System.out.println("执行了一个任务，队列剩余任务数量："+taskQueue.size());
+                    task.run();
+                }catch (Exception e){
+                    System.out.println(e);
+                }finally{
+                    task = null;
+                }
+
+            }
+            // 2. 当taskQueue所有的任务执行完毕，并且超时了，就自毁
+            synchronized (workers){
+                System.out.println("自毁");
+                workers.remove(this);
+            }
+        }
+
+
+    }
+}
+
+```
+
+## 线程池（ThreadPoolExecutor）
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20231004113321302.png" alt="image-20231004113321302" style="zoom:50%;" />
+
+1. 线程池状态：线程池状态用一个int来表示，使用int的高3位来表示线程池状态，低29位来表示线程池数量
+
+<img src="/Users/wengxiaoxiong/Library/Application Support/typora-user-images/image-20231004115855363.png" alt="image-20231004115855363" style="zoom:50%;" />
+
+两者放在一个变量的原因是，只要一次CAS操作，就可以同时修改两个状态
+
+2. 【面试题】构造函数，核心参数必须背，壳在脑袋里，必定会考
+
+```java
+public ThreadPoolExecutor(int corePoolSize, 
+                          int maximumPoolSize,
+                          long keepAliveTime,
+                         	TimeUnit unit,
+                         	BlockQueue<T> blockingQueue,
+                         	ThreadFactory threadFactory,
+                         	RejectExecutionHandler handler) 
+```
+
